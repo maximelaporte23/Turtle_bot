@@ -1,0 +1,31 @@
+Challenge 1 result for student Florian Beauvais, Hugo Bouffanais, Landry Dellau, Célia Gonzalez, Mathieu Martinez et Maxime Laporte
+# Phase 1: 
+Simulation: 
+result: success
+comment: Pas de collision.
+Physical robot:
+result: success
+comment: Pas de collision.
+``
+# Phase 2: 
+Simulation: 
+result: 3 success
+static_obtacle: yes
+dynamic_obtacle: yes
+blocked_path: yes
+comment: Fonctionnel en mode nav.
+Physical robot:
+result: failure
+static_obtacle: no
+dynamic_obtacle: no
+blocked_path: no
+comment: Go home sans obstacles validé.
+``
+# Phase 3: 
+Simulation: 
+result: success
+comment: Le robot ne prend pas le chemin le plus rapide, il se dirige toujours vers la droite jusqu'à trouver la base.
+Physical robot:
+result: failure
+comment: Dock sans obstacles validé.
+``

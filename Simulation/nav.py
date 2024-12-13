@@ -1,62 +1,43 @@
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import LaserScan
-from geometry_msgs.msg import Twist, PoseStamped
+from geometry_msgs.msg import Twist
 from geometry_msgs.msg import PoseWithCovarianceStamped
-from rclpy.duration import Duration
-import time
 import math
-
-
-class BasicNavigator:
-    def __init__(self):
-        # Initialize any variables or state here
-        self._clock = rclpy.clock.Clock()
-        self._is_task_complete = False
-        self._feedback = None
-        self._result = None
-        self._current_pose = None
-
-    def waitUntilNav2Active(self):
-        # Simulate waiting for the navigation to be fully activated
-        time.sleep(2)
-
-    def get_clock(self):
-        return self._clock
-
-    def goToPose(self, goal_pose):
-        # Simulate movement to a goal pose
-        self._current_pose = goal_pose.pose.position
-        self._is_task_complete = False
-        self._result = 3  # Simulate a success result after task completion
-
-    def isTaskComplete(self):
-        return self._is_task_complete
-
-    def getFeedback(self):
-        # Simulate feedback
-        return self._feedback
-
-    def getResult(self):
-        return self._result
-
-    def lifecycleShutdown(self):
-        # Simulate shutting down navigation lifecycle
-        pass
+import time
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
+from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
+from geometry_msgs.msg import PoseStamped
 
 
 class LidarReaderAndMover(Node):
     def __init__(self):
         super().__init__('lidar_reader_and_mover')
+        qos_profile = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10
+        )
 
-        # Initialize BasicNavigator directly here
-        self.navigator = BasicNavigator()
-        self.navigator.waitUntilNav2Active()
+        # Souscriptions
+        self.lidar_subscription = self.create_subscription(
+            LaserScan,
+            '/scan',
+            self.lidar_callback,
+            qos_profile
+        )
+        self.amcl_pose_subscription = self.create_subscription(
+            PoseWithCovarianceStamped,
+            '/amcl_pose',
+            self.amcl_pose_callback,
+            10
+        )
 
-        # Publisher for cmd_vel
+        # Publication
         self.cmd_vel_publisher = self.create_publisher(Twist, '/cmd_vel', 10)
 
-        # Timer to periodically check and send commands
+        # Timer pour l'envoi des commandes
         self.timer = self.create_timer(0.05, self.timer_callback)
 
         # Variables
@@ -69,6 +50,8 @@ class LidarReaderAndMover(Node):
         self.start_orientation = None
         self.aligned_to_path = False
         self.reached_position = False
+        self.navigator = BasicNavigator()
+        self.result = self.navigator.getResult()
         self.last_movement_time = time.time()
 
         # Paramètres follow_me
@@ -78,21 +61,16 @@ class LidarReaderAndMover(Node):
         self.tolerance = 0.02
         self.stability_time = 10.0
 
+        # Tolérances go_home et dock
+        self.position_tolerance = 0.08
+        self.angle_tolerance = math.radians(5)
+
         # Dernière commande valide
         self.last_valid_cmd = Twist()
 
-    def timer_callback(self):
-        cmd = Twist()
-
-        if self.mode == "follow_me":
-            self.follow_me(cmd)
-        elif self.mode == "go_home":
-            self.go_home(cmd)
-        elif self.mode == "dock":
-            self.dock(cmd)
-
-        # Publish the cmd_vel command
-        self.cmd_vel_publisher.publish(cmd)
+        # Coordonnées pour le mode dock
+        self.dock_coordinates = (6.4, -1.3)
+        self.dock_orientation = math.radians(5)
 
     def lidar_callback(self, msg):
         self.lidar_data = msg
@@ -110,7 +88,7 @@ class LidarReaderAndMover(Node):
             self.start_position = self.current_position
             self.start_orientation = self.current_orientation
             self.get_logger().info(f"Position de départ : {self.start_position}, Orientation : {math.degrees(self.start_orientation):.2f}°")
-            
+
     def normalize_angle(self, angle):
         while angle > math.pi:
             angle -= 2 * math.pi
@@ -184,19 +162,13 @@ class LidarReaderAndMover(Node):
         target_x, target_y = self.start_position
         goal_pose.pose.position.x = target_x  # Set home position
         goal_pose.pose.position.y = target_y  # Set home position
-        goal_pose.pose.orientation.w = self.start_orientation 
+        goal_pose.pose.orientation.z = self.start_orientation 
 
         # Move to the home position using BasicNavigator
         self.navigator.goToPose(goal_pose)
 
-        # If needed, add feedback or check if task is completed
-        if not self.navigator.isTaskComplete():
-            feedback = self.navigator.getFeedback()
-            if feedback:
-                self.get_logger().info(f"Estimated time of arrival: {feedback.estimated_time_remaining}")
-
         # Once task is complete, switch to docking mode
-        if self.navigator.getResult() == 3:  # TaskResult.SUCCEEDED
+        if self.result == TaskResult.SUCCEEDED or self.result == TaskResult.CANCELED or self.result == TaskResult.FAILED:  # TaskResult.SUCCEEDED
             self.mode = "dock"
 
     def dock(self, cmd):
@@ -206,20 +178,25 @@ class LidarReaderAndMover(Node):
         dock_pose.header.stamp = self.navigator.get_clock().now().to_msg()
         dock_pose.pose.position.x = 7.63  # Dock position
         dock_pose.pose.position.y = -6.87  # Dock position
-        dock_pose.pose.orientation.w = 1.0
+        dock_pose.pose.orientation.z = 1.0
 
         # Move to the dock position using BasicNavigator
         self.navigator.goToPose(dock_pose)
 
-        # If needed, add feedback or check if task is completed
-        if not self.navigator.isTaskComplete():
-            feedback = self.navigator.getFeedback()
-            if feedback:
-                self.get_logger().info(f"Estimated time of arrival: {feedback.estimated_time_remaining}")
-
         # Once task is complete, return to follow_me mode
-        if self.navigator.getResult() == 3:  # TaskResult.SUCCEEDED
+        if self.result == TaskResult.SUCCEEDED:  # TaskResult.SUCCEEDED
             self.mode = "follow_me"
+
+    def timer_callback(self):
+        cmd = Twist()
+        if self.mode == "follow_me":
+            self.follow_me(cmd)
+        elif self.mode == "go_home":
+            self.go_home(cmd)
+        elif self.mode == "dock":
+            self.dock(cmd)
+
+        self.cmd_vel_publisher.publish(cmd)
 
 
 def main(args=None):
@@ -227,7 +204,9 @@ def main(args=None):
     node = LidarReaderAndMover()
     rclpy.spin(node)
     rclpy.shutdown()
+    rclpy.init()
 
 
 if __name__ == '__main__':
     main()
+
